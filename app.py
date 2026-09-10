@@ -4,6 +4,12 @@ import csv
 import io
 from datetime import date, datetime
 from calendar import month_name
+from reportlab.lib import colors
+from reportlab.lib.pagesizes import A4
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib.enums import TA_CENTER
+from reportlab.lib.units import mm
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
 
 DB_FILE = "extra_charges.db"
 
@@ -104,6 +110,65 @@ def csv_bytes(rows):
     for r in rows:
         writer.writerow([r["work_date"], r["address"], r["charge_type"], r["quantity"], r["note"]])
     return output.getvalue().encode("utf-8-sig")
+
+
+
+def pdf_bytes(rows, year, month):
+    output = io.BytesIO()
+    doc = SimpleDocTemplate(
+        output, pagesize=A4,
+        rightMargin=15 * mm, leftMargin=15 * mm,
+        topMargin=15 * mm, bottomMargin=15 * mm,
+    )
+    styles = getSampleStyleSheet()
+    title_style = ParagraphStyle(
+        "ReportTitle", parent=styles["Title"], alignment=TA_CENTER,
+        fontSize=16, leading=20, spaceAfter=12,
+    )
+    heading_style = ParagraphStyle(
+        "ChargeHeading", parent=styles["Heading2"], fontSize=11,
+        leading=14, spaceBefore=8, spaceAfter=5,
+    )
+    body_style = styles["BodyText"]
+    story = [
+        Paragraph(f"Extra Charges Report - {month_name[month]} {year}", title_style),
+        Paragraph(f"Total extra charges: {sum(r['quantity'] for r in rows)}", body_style),
+        Spacer(1, 6),
+    ]
+
+    preferred_order = ["Travel", "Interconnection", "RCD Replacement", "Other"]
+    all_types = list(dict.fromkeys(preferred_order + [r["charge_type"] for r in rows]))
+    for charge_type in all_types:
+        grouped = [r for r in rows if r["charge_type"] == charge_type]
+        if not grouped:
+            continue
+        total_qty = sum(r["quantity"] for r in grouped)
+        story.append(Paragraph(f"{charge_type} - {total_qty}", heading_style))
+        data = [["Date", "Address", "Qty", "Note"]]
+        for r in grouped:
+            d = datetime.strptime(r["work_date"], "%Y-%m-%d").strftime("%d/%m/%Y")
+            data.append([
+                d,
+                Paragraph(str(r["address"]), body_style),
+                str(r["quantity"]),
+                Paragraph(str(r["note"] or ""), body_style),
+            ])
+        table = Table(data, colWidths=[27*mm, 82*mm, 14*mm, 47*mm], repeatRows=1)
+        table.setStyle(TableStyle([
+            ("BACKGROUND", (0,0), (-1,0), colors.lightgrey),
+            ("FONTNAME", (0,0), (-1,0), "Helvetica-Bold"),
+            ("FONTSIZE", (0,0), (-1,-1), 8.5),
+            ("VALIGN", (0,0), (-1,-1), "TOP"),
+            ("GRID", (0,0), (-1,-1), 0.35, colors.grey),
+            ("LEFTPADDING", (0,0), (-1,-1), 4),
+            ("RIGHTPADDING", (0,0), (-1,-1), 4),
+            ("TOPPADDING", (0,0), (-1,-1), 4),
+            ("BOTTOMPADDING", (0,0), (-1,-1), 4),
+        ]))
+        story.extend([table, Spacer(1, 8)])
+
+    doc.build(story)
+    return output.getvalue()
 
 
 def simple_report_text(rows, year, month):
@@ -222,19 +287,20 @@ with report_tab:
         col1, col2 = st.columns(2)
         with col1:
             if st.download_button(
-                "Download CSV",
-                data=csv_bytes(rows),
-                file_name=filename_base + ".csv",
-                mime="text/csv",
+                "Download PDF",
+                data=pdf_bytes(rows, selected_year, selected_month),
+                file_name=filename_base + ".pdf",
+                mime="application/pdf",
                 use_container_width=True,
+                type="primary",
             ):
                 set_status(selected_year, selected_month, "EXPORTED")
         with col2:
             if st.download_button(
-                "Download Report",
-                data=simple_report_text(rows, selected_year, selected_month).encode("utf-8"),
-                file_name=filename_base + ".txt",
-                mime="text/plain",
+                "Download CSV",
+                data=csv_bytes(rows),
+                file_name=filename_base + ".csv",
+                mime="text/csv",
                 use_container_width=True,
             ):
                 set_status(selected_year, selected_month, "EXPORTED")
@@ -248,4 +314,3 @@ with report_tab:
         if st.button("Reopen Month", use_container_width=True):
             set_status(selected_year, selected_month, "OPEN")
             st.rerun()
-
